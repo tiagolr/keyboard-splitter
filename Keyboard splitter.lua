@@ -77,6 +77,7 @@ function make_region(keymin, keymax, velmin, velmax)
     y = g.win_h - (velmax * g.vel_h + g.key_h),
     w = (keymax - keymin) * g.key_w + g.key_w,
     h = (velmax - velmin) * g.vel_h + g.vel_h,
+    transpose = 0,
     hover = false,
     selected = false,
     updated = false,
@@ -165,6 +166,11 @@ function is_keyvel(tr, nfx)
   return ret and pname == 'Velocity Multiply'
 end
 
+function is_transpose(tr, nfx)
+  local ret, pname = reaper.TrackFX_GetParamName(tr, nfx, 0)
+  return ret and pname == 'Transpose Semitones'
+end
+
 function has_keyvel (tr)
   for i = 1, reaper.TrackFX_GetCount(tr) do
     if is_keyvel(tr, i - 1) then
@@ -172,6 +178,13 @@ function has_keyvel (tr)
     end
   end
   return false
+end
+
+function get_transpose (tr)
+  for i = 1, reaper.TrackFX_GetCount(tr) do
+    if is_transpose(tr, i - 1) then return i - 1 end
+  end
+  return nil
 end
 
 -- create regions/keyvel for selected tracks without keyvel control
@@ -220,6 +233,10 @@ function create_region_from_fx(track, nfx, ntrack)
   return reg
 end
 
+function update_transpose_from_fx(reg, track, nfx)
+  local _, transpose = reaper.TrackFX_GetFormattedParamValue(track, nfx, 0)
+  reg.transpose = tonumber(transpose)
+end
 
 function fetch_regions()
   sel_tracks = {}
@@ -238,11 +255,16 @@ function fetch_regions()
         if is_keyvel(track, j - 1) then
           keyvel_count = keyvel_count + 1
           local fxid = reaper.TrackFX_GetFXGUID(track, j - 1)
-          if regions_map[fxid] then
+          local reg = regions_map[fxid]
+          if reg then
             update_region_from_fx(regions_map[fxid], track, j - 1, i - 1)
           else
-            local reg = create_region_from_fx(track, j - 1, i - 1)
+            reg = create_region_from_fx(track, j - 1, i - 1)
             table.insert(new_regions, reg)
+          end
+          local tfx = get_transpose(track)
+          if tfx then
+            update_transpose_from_fx(reg, track, tfx)
           end
           goto continue
         end
@@ -268,11 +290,36 @@ function update_keyvel_from_reg(reg)
         reaper.TrackFX_SetParam(track, j - 1, 5, reg.keymax)
         reaper.TrackFX_SetParam(track, j - 1, 2, reg.velmin)
         reaper.TrackFX_SetParam(track, j - 1, 3, reg.velmax)
-        goto continue
+        return
       end
     end
   end
-  :: continue ::
+end
+
+function update_transpose_from_reg(reg)
+  local reg_track
+  for i = 1, reaper.GetNumTracks() do
+    local track = reaper.GetTrack(0, i - 1)
+    for j = 1, reaper.TrackFX_GetCount(track) do
+      local fxid = reaper.TrackFX_GetFXGUID(track, j - 1)
+      if fxid == reg.fxid then
+        reg_track = track
+      end
+    end
+  end
+
+  if not reg_track then return end
+  for i = 1, reaper.TrackFX_GetCount(reg_track) do
+    if is_transpose(reg_track, i - 1) then
+      reaper.TrackFX_SetParam(reg_track, i - 1, 0, reg.transpose)
+      return
+    end
+  end
+  -- transpose widget not found, insert one
+  local fxi = reaper.TrackFX_AddByName(reg_track, 'MIDI Transpose Notes', false, -1001)
+  reaper.TrackFX_Show(reg_track, fxi, 0)
+  reaper.TrackFX_Show(reg_track, fxi, 2)
+  reaper.TrackFX_SetParam(reg_track, fxi, 0, reg.transpose)
 end
 
 function start_drag(region, margin)
@@ -462,8 +509,12 @@ function update_widget_drag()
   end
   local offset_y = math.floor((widget_drag.start_y - rtk.mouse.y) / 2)
   local val = widget_drag.start_val + offset_y
-  if val < 0 then val = 0
-  elseif val > 127 then val = 127
+  if widget_drag.widget == 'transpose' then
+    if val < -64 then val = -64 end
+    if val > 64 then val = 64 end
+  else
+    if val < 0 then val = 0 end
+    if val > 127 then val = 127 end
   end
   local reg
   for _, r in ipairs(regions) do
@@ -475,7 +526,11 @@ function update_widget_drag()
   if widget_drag.widget == 'keymin' and val > reg.keymax then val = reg.keymax end
   if widget_drag.widget == 'keymax' and val < reg.keymin then val = reg.keymin end
   reg[widget_drag.widget] = val
-  update_keyvel_from_reg(reg)
+  if widget_drag.widget == 'transpose' then
+    update_transpose_from_reg(reg)
+  else
+    update_keyvel_from_reg(reg)
+  end
 end
 
 function draw()
@@ -516,10 +571,11 @@ function draw_ui()
   else
     ui_controls:attr('visible', true)
     ui_helpbox:attr('visible', false)
-    ui_note_start:attr('text', sel_region.keymin .. ' ' .. notes[sel_region.keymin + 1])
-    ui_note_end:attr('text', sel_region.keymax .. ' ' .. notes[sel_region.keymax + 1])
-    ui_vel_min:attr('text', sel_region.velmin)
-    ui_vel_max:attr('text', sel_region.velmax)
+    ui_note_start:attr('text', math.floor(sel_region.keymin) .. ' ' .. notes[sel_region.keymin + 1])
+    ui_note_end:attr('text', math.floor(sel_region.keymax) .. ' ' .. notes[sel_region.keymax + 1])
+    ui_vel_min:attr('text', math.floor(sel_region.velmin))
+    ui_vel_max:attr('text', math.floor(sel_region.velmax))
+    ui_transpose:attr('text', math.floor(sel_region.transpose))
     ui_track_name:attr('text', sel_region.trackname)
   end
   ui_btn_create_regions:attr('disabled', #sel_tracks <= keyvel_count)
@@ -558,6 +614,10 @@ function init()
   ui_note_end = ui_hbox:add(rtk.Text{'', w=60, cursor=rtk.mouse.cursors.SIZE_NS })
   ui_note_end.onmousedown = function () start_widget_drag('keymax') end
   ui_track_name = ui_controls:add(rtk.Text{''})
+  ui_hbox:add(rtk.Text{'Transpose'})
+  ui_transpose = ui_hbox:add(rtk.Text{'', w=60, cursor=rtk.mouse.cursors.SIZE_NS })
+  ui_transpose.onmousedown = function () start_widget_drag('transpose') end
+
 
   ui_helpbox = window:add(rtk.Text{'No region selected', padding=10})
 
