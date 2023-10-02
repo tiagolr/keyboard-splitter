@@ -163,12 +163,8 @@ end
 
 function is_keyvel(tr, nfx)
   local ret, pname = reaper.TrackFX_GetParamName(tr, nfx, 0)
-  return ret and pname == 'Velocity Multiply'
-end
-
-function is_transpose(tr, nfx)
-  local ret, pname = reaper.TrackFX_GetParamName(tr, nfx, 0)
-  return ret and pname == 'Transpose Semitones'
+  local ret2, pname2 = reaper.TrackFX_GetParamName(tr, nfx, 4)
+  return ret and ret2 and pname == 'Note min' and pname2 == 'Transpose'
 end
 
 function has_keyvel (tr)
@@ -180,32 +176,34 @@ function has_keyvel (tr)
   return false
 end
 
-function get_transpose (tr)
-  for i = 1, reaper.TrackFX_GetCount(tr) do
-    if is_transpose(tr, i - 1) then return i - 1 end
-  end
-  return nil
-end
-
 -- create regions/keyvel for selected tracks without keyvel control
 function create_regions ()
   reaper.Undo_BeginBlock()
+  reaper.PreventUIRefresh(1)
   for i = 1, reaper.GetNumTracks() do
     local track = reaper.GetTrack(0, i - 1)
     if reaper.IsTrackSelected(track) and not has_keyvel(track) then
-      local fxi = reaper.TrackFX_AddByName(track, 'MIDI Velocity Control', false, -1000)
+      local fxi = reaper.TrackFX_AddByName(track, 'MIDI Keyvel Filter', false, -1000)
+      if fxi == -1 then
+        reaper.PreventUIRefresh(-1)
+        reaper.MB('MIDI Keyvel Filter JSFX is missing. Make sure you install it via ReaPack.', '', 0)
+        reaper.Undo_EndBlock('keysplitter - create_regions', 0)
+        return
+      end
       reaper.TrackFX_Show(track, fxi, 0)
       reaper.TrackFX_Show(track, fxi, 2)
     end
   end
+  reaper.PreventUIRefresh(-1)
   reaper.Undo_EndBlock('keysplitter - create_regions', 0)
 end
 
 function update_region_from_fx(reg, track, nfx, ntrack)
-  local _, keymin = reaper.TrackFX_GetFormattedParamValue(track, nfx, 4)
-  local _, keymax = reaper.TrackFX_GetFormattedParamValue(track, nfx, 5)
+  local _, keymin = reaper.TrackFX_GetFormattedParamValue(track, nfx, 0)
+  local _, keymax = reaper.TrackFX_GetFormattedParamValue(track, nfx, 1)
   local _, velmin = reaper.TrackFX_GetFormattedParamValue(track, nfx, 2)
   local _, velmax = reaper.TrackFX_GetFormattedParamValue(track, nfx, 3)
+  local _, transpose = reaper.TrackFX_GetFormattedParamValue(track, nfx, 4)
   local rr = make_region(tonumber(keymin), tonumber(keymax), tonumber(velmin), tonumber(velmax))
   reg.keymin = rr.keymin
   reg.keymax = rr.keymax
@@ -215,27 +213,25 @@ function update_region_from_fx(reg, track, nfx, ntrack)
   reg.y = rr.y
   reg.w = rr.w
   reg.h = rr.h
+  reg.transpose = transpose
   reg.track = ntrack
   reg.updated = true
 end
 
 function create_region_from_fx(track, nfx, ntrack)
-  local _, keymin = reaper.TrackFX_GetFormattedParamValue(track, nfx, 4)
-  local _, keymax = reaper.TrackFX_GetFormattedParamValue(track, nfx, 5)
+  local _, keymin = reaper.TrackFX_GetFormattedParamValue(track, nfx, 0)
+  local _, keymax = reaper.TrackFX_GetFormattedParamValue(track, nfx, 1)
   local _, velmin = reaper.TrackFX_GetFormattedParamValue(track, nfx, 2)
   local _, velmax = reaper.TrackFX_GetFormattedParamValue(track, nfx, 3)
+  local _, transpose = reaper.TrackFX_GetFormattedParamValue(track, nfx, 4)
   local fxid = reaper.TrackFX_GetFXGUID(track, nfx)
   local reg = make_region(tonumber(keymin), tonumber(keymax), tonumber(velmin), tonumber(velmax))
   reg.track = ntrack
   reg.fxid = fxid
+  reg.transpose = transpose
   local _, trackname = reaper.GetTrackName(track)
   reg.trackname = trackname
   return reg
-end
-
-function update_transpose_from_fx(reg, track, nfx)
-  local _, transpose = reaper.TrackFX_GetFormattedParamValue(track, nfx, 0)
-  reg.transpose = tonumber(transpose)
 end
 
 function fetch_regions()
@@ -262,10 +258,6 @@ function fetch_regions()
             reg = create_region_from_fx(track, j - 1, i - 1)
             table.insert(new_regions, reg)
           end
-          local tfx = get_transpose(track)
-          if tfx then
-            update_transpose_from_fx(reg, track, tfx)
-          end
           goto continue
         end
       end
@@ -286,40 +278,15 @@ function update_keyvel_from_reg(reg)
     for j = 1, reaper.TrackFX_GetCount(track) do
       local fxid = reaper.TrackFX_GetFXGUID(track, j - 1)
       if fxid == reg.fxid then
-        reaper.TrackFX_SetParam(track, j - 1, 4, reg.keymin)
-        reaper.TrackFX_SetParam(track, j - 1, 5, reg.keymax)
+        reaper.TrackFX_SetParam(track, j - 1, 0, reg.keymin)
+        reaper.TrackFX_SetParam(track, j - 1, 1, reg.keymax)
         reaper.TrackFX_SetParam(track, j - 1, 2, reg.velmin)
         reaper.TrackFX_SetParam(track, j - 1, 3, reg.velmax)
+        reaper.TrackFX_SetParam(track, j - 1, 4, reg.transpose)
         return
       end
     end
   end
-end
-
-function update_transpose_from_reg(reg)
-  local reg_track
-  for i = 1, reaper.GetNumTracks() do
-    local track = reaper.GetTrack(0, i - 1)
-    for j = 1, reaper.TrackFX_GetCount(track) do
-      local fxid = reaper.TrackFX_GetFXGUID(track, j - 1)
-      if fxid == reg.fxid then
-        reg_track = track
-      end
-    end
-  end
-
-  if not reg_track then return end
-  for i = 1, reaper.TrackFX_GetCount(reg_track) do
-    if is_transpose(reg_track, i - 1) then
-      reaper.TrackFX_SetParam(reg_track, i - 1, 0, reg.transpose)
-      return
-    end
-  end
-  -- transpose widget not found, insert one
-  local fxi = reaper.TrackFX_AddByName(reg_track, 'MIDI Transpose Notes', false, -1001)
-  reaper.TrackFX_Show(reg_track, fxi, 0)
-  reaper.TrackFX_Show(reg_track, fxi, 2)
-  reaper.TrackFX_SetParam(reg_track, fxi, 0, reg.transpose)
 end
 
 function start_drag(region, margin)
@@ -510,8 +477,8 @@ function update_widget_drag()
   local offset_y = math.floor((widget_drag.start_y - rtk.mouse.y) / 2)
   local val = widget_drag.start_val + offset_y
   if widget_drag.widget == 'transpose' then
-    if val < -64 then val = -64 end
-    if val > 64 then val = 64 end
+    if val < -60 then val = -60 end
+    if val > 60 then val = 60 end
   else
     if val < 0 then val = 0 end
     if val > 127 then val = 127 end
@@ -526,11 +493,7 @@ function update_widget_drag()
   if widget_drag.widget == 'keymin' and val > reg.keymax then val = reg.keymax end
   if widget_drag.widget == 'keymax' and val < reg.keymin then val = reg.keymin end
   reg[widget_drag.widget] = val
-  if widget_drag.widget == 'transpose' then
-    update_transpose_from_reg(reg)
-  else
-    update_keyvel_from_reg(reg)
-  end
+  update_keyvel_from_reg(reg)
 end
 
 function draw()
