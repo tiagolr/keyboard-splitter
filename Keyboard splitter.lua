@@ -148,7 +148,7 @@ function draw_region_shortcuts()
   for i, reg in ipairs(regs) do
     local red, green, blue, _ = rtk.color.rgba(colors[(reg.track % #colors) + 1])
     gfx.set(red, green, blue, reg.selected and 0.75 or 0.5)
-    local w = 20
+    local w = 18
     local x = (i - 1) * w
     local y = g.win_h - g.key_h - g.region_h - w
     gfx.rect(x, y, w, w, 1)
