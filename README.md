@@ -1,6 +1,3 @@
-# Keyboard splitter
-
-Manage tracks keyboard splitting using a visual keymap.
-Installation via reapack.
+Archived, moved to [https://github.com/tiagolr/reaper_scripts]()
 
 ![keyboard-splitter.gif](doc/keyboard-splitter.gif)
